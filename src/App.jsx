@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 import {
   Dumbbell, Upload, Users, Play, ArrowLeft, Search, Plus, X, LogOut,
   Download, ChevronRight, FileSpreadsheet, Check, Trash2, Pencil, Save,
-  AlertTriangle, CalendarDays, Clock, UserPlus, CheckCircle2
+  AlertTriangle, CalendarDays, Clock, UserPlus, CheckCircle2, MessageCircle, TrendingUp
 } from "lucide-react";
 import { initializeApp } from "firebase/app";
 import {
@@ -12,7 +12,7 @@ import {
 } from "firebase/auth";
 import {
   getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc,
-  collection, getDocs, query, where, serverTimestamp,
+  collection, getDocs, query, where, serverTimestamp, arrayUnion,
 } from "firebase/firestore";
 
 /* ------------------------------------------------------------------ *
@@ -63,6 +63,7 @@ function formatDate(ts) {
 function initials(nome) {
   return nome.split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 }
+const PACOTES = { bronze: "Bronze", prata: "Prata", gold: "Gold" };
 
 
 export default function App() {
@@ -82,6 +83,8 @@ export default function App() {
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newSenha, setNewSenha] = useState("");
+  const [newPacote, setNewPacote] = useState("bronze");
+  const [config, setConfig] = useState({ whatsappProfessor: "" });
   const [editingKey, setEditingKey] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
   const [completed, setCompleted] = useState({});
@@ -122,10 +125,10 @@ export default function App() {
             setCompleted(completedObj); setNotes(notesObj);
             setScreen("studentDashboard");
           } else {
-            setAuthUser(user); setAuthRole(null);alert("Não achei doc para o UID: " + user.uid);
+            setAuthUser(user); setAuthRole(null);
           }
         }
-      } catch (e) {alert("ERRO: " + e.message);
+      } catch (e) {
         setAuthUser(user); setAuthRole(null);
       }
       setAuthLoading(false);
@@ -155,6 +158,27 @@ export default function App() {
   useEffect(() => {
     if (authRole === "admin") loadAllStudents();
   }, [authRole]);
+
+  async function loadConfig() {
+    try {
+      const snap = await getDoc(doc(db, "config", "geral"));
+      if (snap.exists()) setConfig(snap.data());
+    } catch (e) {}
+  }
+
+  useEffect(() => {
+    if (authRole === "admin" || authRole === "aluno") loadConfig();
+  }, [authRole]);
+
+  async function saveWhatsapp(numero) {
+    try {
+      await setDoc(doc(db, "config", "geral"), { whatsappProfessor: numero }, { merge: true });
+      setConfig((prev) => ({ ...prev, whatsappProfessor: numero }));
+      showToast("success", "WhatsApp de suporte atualizado.");
+    } catch (e) {
+      showToast("error", "Não foi possível salvar o WhatsApp de suporte.");
+    }
+  }
 
   const showToast = (type, msg) => setToast({ type, msg });
 
@@ -293,11 +317,11 @@ export default function App() {
       const cred = await createUserWithEmailAndPassword(secondaryAuth, newEmail.trim(), newSenha.trim());
       const newUid = cred.user.uid;
       await setDoc(doc(db, "alunos", newUid), {
-        nome: newName.trim(), email: newEmail.trim(),
+        nome: newName.trim(), email: newEmail.trim(), pacote: newPacote,
         treino: { dias: [], ultimaAtualizacao: null },
       });
       await signOut(secondaryAuth);
-      setNewName(""); setNewEmail(""); setNewSenha(""); setShowAddStudent(false);
+      setNewName(""); setNewEmail(""); setNewSenha(""); setNewPacote("bronze"); setShowAddStudent(false);
       showToast("success", "Aluno cadastrado. Já pode entrar com o e-mail e senha dele.");
       await loadAllStudents();
     } catch (e) {
@@ -374,6 +398,51 @@ export default function App() {
     const key = `${currentStudentId}-${diaIdx}-${exIdx}`;
     setNotes((prev) => ({ ...prev, [key]: value }));
     updateDoc(doc(db, "alunos", currentStudentId), { [`progresso.notes.${diaIdx}_${exIdx}`]: value }).catch(() => {});
+  }
+
+  async function setPacote(studentId, pacote) {
+    setStudents((prev) => prev.map((s) => s.id !== studentId ? s : { ...s, pacote }));
+    try {
+      await updateDoc(doc(db, "alunos", studentId), { pacote });
+      showToast("success", "Pacote atualizado.");
+    } catch (e) {
+      showToast("error", "Não foi possível atualizar o pacote.");
+    }
+  }
+
+  async function registrarCarga(diaIdx, exIdx, valorStr) {
+    const valor = Number(valorStr);
+    if (!valor || valor <= 0) { showToast("error", "Informe um valor de carga válido."); return; }
+    const key = `${diaIdx}_${exIdx}`;
+    const entry = { valor, data: Date.now() };
+    setStudents((prev) => prev.map((s) => s.id !== currentStudentId ? s : {
+      ...s, progresso: { ...(s.progresso || {}), cargas: {
+        ...(s.progresso?.cargas || {}), [key]: [...(s.progresso?.cargas?.[key] || []), entry],
+      }},
+    }));
+    try {
+      await updateDoc(doc(db, "alunos", currentStudentId), { [`progresso.cargas.${key}`]: arrayUnion(entry) });
+    } catch (e) {
+      showToast("error", "Não foi possível salvar a carga.");
+    }
+  }
+
+  function setFeedbackAluno(diaIdx, texto) {
+    setStudents((prev) => prev.map((s) => s.id !== currentStudentId ? s : {
+      ...s, progresso: { ...(s.progresso || {}), feedback: {
+        ...(s.progresso?.feedback || {}), [diaIdx]: { ...(s.progresso?.feedback?.[diaIdx] || {}), aluno: texto },
+      }},
+    }));
+    updateDoc(doc(db, "alunos", currentStudentId), { [`progresso.feedback.${diaIdx}.aluno`]: texto }).catch(() => {});
+  }
+
+  function setFeedbackProfessor(studentId, diaIdx, texto) {
+    setStudents((prev) => prev.map((s) => s.id !== studentId ? s : {
+      ...s, progresso: { ...(s.progresso || {}), feedback: {
+        ...(s.progresso?.feedback || {}), [diaIdx]: { ...(s.progresso?.feedback?.[diaIdx] || {}), professor: texto },
+      }},
+    }));
+    updateDoc(doc(db, "alunos", studentId), { [`progresso.feedback.${diaIdx}.professor`]: texto }).catch(() => {});
   }
 
   function logout() {
@@ -456,7 +525,9 @@ export default function App() {
           newName={newName} setNewName={setNewName}
           newEmail={newEmail} setNewEmail={setNewEmail}
           newSenha={newSenha} setNewSenha={setNewSenha}
+          newPacote={newPacote} setNewPacote={setNewPacote}
           onAddStudent={addStudent}
+          config={config} onSaveWhatsapp={saveWhatsapp}
         />
       )}
       <input
@@ -482,6 +553,8 @@ export default function App() {
           onCancelEdit={() => { setEditingKey(null); setEditDraft(null); }}
           onRemoveExercicio={(di, ei) => removeExercicio(viewStudent.id, di, ei)}
           onRemoveDia={(di) => removeDia(viewStudent.id, di)}
+          onSetPacote={(pacote) => setPacote(viewStudent.id, pacote)}
+          onSetFeedbackProfessor={(di, texto) => setFeedbackProfessor(viewStudent.id, di, texto)}
         />
       )}
 
@@ -491,6 +564,7 @@ export default function App() {
           completed={completed}
           onLogout={logout}
           onOpenDia={(idx) => { setCurrentDiaIdx(idx); setScreen("studentDay"); }}
+          config={config}
         />
       )}
 
@@ -504,6 +578,8 @@ export default function App() {
           notes={notes}
           onToggleCompleted={toggleCompleted}
           onSetNote={setNote}
+          onRegistrarCarga={registrarCarga}
+          onSetFeedbackAluno={setFeedbackAluno}
           onBack={() => setScreen("studentDashboard")}
         />
       )}
@@ -610,8 +686,13 @@ function AdminDashboard(props) {
     students, studentsLoading, search, setSearch, onLogout, onOpenStudent, onRemoveStudent,
     onUploadClick, onDropFile, dragOver, setDragOver, onDownloadModel,
     showAddStudent, setShowAddStudent, newName, setNewName, newEmail, setNewEmail,
-    newSenha, setNewSenha, onAddStudent,
+    newSenha, setNewSenha, newPacote, setNewPacote, onAddStudent,
+    config, onSaveWhatsapp,
   } = props;
+  const [showSuporteConfig, setShowSuporteConfig] = useState(false);
+  const [whatsDraft, setWhatsDraft] = useState(config?.whatsappProfessor || "");
+  useEffect(() => { setWhatsDraft(config?.whatsappProfessor || ""); }, [config?.whatsappProfessor]);
+
   return (
     <div className="ta-page">
       <TopBar title="Painel do professor" icon={<Users size={18} />} onLogout={onLogout} />
@@ -638,15 +719,37 @@ function AdminDashboard(props) {
             <Search size={16} />
             <input placeholder="Buscar aluno..." value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
+          <button className="ta-btn ta-btn-ghost" onClick={() => setShowSuporteConfig((v) => !v)}>WhatsApp de suporte</button>
           <button className="ta-btn ta-btn-primary" onClick={() => setShowAddStudent(true)}><UserPlus size={16} /> Novo aluno</button>
         </div>
+
+        {showSuporteConfig && (
+          <div className="ta-card ta-add-form">
+            <p className="ta-sub small" style={{ margin: 0 }}>Número que aparece pros alunos dos planos Prata e Gold entrarem em contato direto (com código do país, só números — ex: 5541999999999).</p>
+            <input className="ta-input" placeholder="55DDDNÚMERO" value={whatsDraft} onChange={(e) => setWhatsDraft(e.target.value)} />
+            <div className="ta-row-end">
+              <button className="ta-btn ta-btn-ghost" onClick={() => setShowSuporteConfig(false)}>Fechar</button>
+              <button className="ta-btn ta-btn-primary" onClick={() => onSaveWhatsapp(whatsDraft.trim())}>Salvar</button>
+            </div>
+          </div>
+        )}
 
         {showAddStudent && (
           <div className="ta-card ta-add-form">
             <input className="ta-input" placeholder="Nome do aluno" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
             <input className="ta-input" type="email" placeholder="E-mail do aluno" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
             <input className="ta-input" type="password" placeholder="Senha (mín. 6 caracteres)" value={newSenha} onChange={(e) => setNewSenha(e.target.value)} />
-            <p className="ta-hint">Esse e-mail e senha serão o login do aluno no app.</p>
+            <label className="ta-label">Pacote</label>
+            <div className="ta-pacote-picker">
+              {Object.entries(PACOTES).map(([key, label]) => (
+                <button
+                  type="button" key={key}
+                  className={`ta-pacote-option ${key} ${newPacote === key ? "selected" : ""}`}
+                  onClick={() => setNewPacote(key)}
+                >{label}</button>
+              ))}
+            </div>
+            <p className="ta-hint">Esse e-mail e senha serão o login do aluno no app. Suporte direto por WhatsApp é liberado nos planos Prata e Gold.</p>
             <div className="ta-row-end">
               <button className="ta-btn ta-btn-ghost" onClick={() => setShowAddStudent(false)}>Cancelar</button>
               <button className="ta-btn ta-btn-primary" onClick={onAddStudent}>Salvar aluno</button>
@@ -661,7 +764,7 @@ function AdminDashboard(props) {
             <div key={s.id} className="ta-student-row">
               <div className="ta-avatar">{initials(s.nome)}</div>
               <div className="ta-student-info">
-                <div className="ta-student-name">{s.nome}</div>
+                <div className="ta-student-name">{s.nome} <span className={`ta-badge pacote-${s.pacote || "bronze"}`}>{PACOTES[s.pacote] || "Bronze"}</span></div>
                 <div className="ta-student-meta">
                   {s.treino.dias.length} dia(s) de treino · atualizado em {formatDate(s.treino.ultimaAtualizacao)}
                 </div>
@@ -723,16 +826,29 @@ function AdminUploadPreview({ preview, onCancel, onConfirm }) {
 }
 
 function AdminStudentView(props) {
-  const { student, onBack, editingKey, editDraft, setEditDraft, onStartEdit, onSaveEdit, onCancelEdit, onRemoveExercicio, onRemoveDia } = props;
+  const { student, onBack, editingKey, editDraft, setEditDraft, onStartEdit, onSaveEdit, onCancelEdit, onRemoveExercicio, onRemoveDia, onSetPacote, onSetFeedbackProfessor } = props;
   return (
     <div className="ta-page">
       <TopBar title={student.nome} icon={<Users size={18} />} onBack={onBack} />
       <div className="ta-wrap">
-        <div className="ta-student-meta" style={{ marginBottom: 14 }}>
-          Última atualização: {formatDate(student.treino.ultimaAtualizacao)} · {student.treino.dias.length} dia(s)
+        <div className="ta-row-between" style={{ marginBottom: 14 }}>
+          <div className="ta-student-meta">
+            Última atualização: {formatDate(student.treino.ultimaAtualizacao)} · {student.treino.dias.length} dia(s)
+          </div>
+          <div className="ta-pacote-picker">
+            {Object.entries(PACOTES).map(([key, label]) => (
+              <button
+                type="button" key={key}
+                className={`ta-pacote-option ${key} ${(student.pacote || "bronze") === key ? "selected" : ""}`}
+                onClick={() => onSetPacote(key)}
+              >{label}</button>
+            ))}
+          </div>
         </div>
         {student.treino.dias.length === 0 && <EmptyState msg="Este aluno ainda não tem treino cadastrado. Envie uma planilha com o nome dele." />}
-        {student.treino.dias.map((dia, di) => (
+        {student.treino.dias.map((dia, di) => {
+          const fb = student.progresso?.feedback?.[di] || {};
+          return (
           <div className="ta-card ta-day-block" key={di}>
             <div className="ta-row-between">
               <div className="ta-day-title">{dia.nome}</div>
@@ -741,6 +857,7 @@ function AdminStudentView(props) {
             {dia.exercicios.map((ex, ei) => {
               const key = `${di}-${ei}`;
               const editing = editingKey === key;
+              const cargas = student.progresso?.cargas?.[`${di}_${ei}`] || [];
               return (
                 <div className="ta-ex-row" key={ei}>
                   {editing ? (
@@ -766,6 +883,11 @@ function AdminStudentView(props) {
                           <span className="ta-badge">{ex.repeticoes} reps</span>
                           {ex.observacoes && <span className="ta-badge muted">{ex.observacoes}</span>}
                         </div>
+                        {cargas.length > 0 && (
+                          <div className="ta-carga-history">
+                            Cargas: {cargas.slice(-5).map((c, i) => `${c.valor}kg (${formatDate(c.data)})`).join(" · ")}
+                          </div>
+                        )}
                       </div>
                       <div className="ta-ex-actions">
                         <button className="ta-icon-btn" onClick={() => onStartEdit(di, ei, ex)} title="Editar"><Pencil size={15} /></button>
@@ -776,14 +898,24 @@ function AdminStudentView(props) {
                 </div>
               );
             })}
+            <div className="ta-feedback-block">
+              <div className="ta-feedback-label">Como o aluno se sentiu nesse treino</div>
+              <div className="ta-feedback-aluno">{fb.aluno ? fb.aluno : <span className="ta-sub small" style={{ margin: 0 }}>Ainda sem feedback do aluno.</span>}</div>
+              <label className="ta-label">Sua resposta (o aluno vê isso)</label>
+              <textarea
+                className="ta-textarea" placeholder="Escreva uma orientação ou resposta pro aluno..."
+                value={fb.professor || ""} onChange={(e) => onSetFeedbackProfessor(di, e.target.value)}
+              />
+            </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function StudentDashboard({ student, completed, onLogout, onOpenDia }) {
+function StudentDashboard({ student, completed, onLogout, onOpenDia, config }) {
   const dias = student.treino.dias;
   return (
     <div className="ta-page">
@@ -817,6 +949,8 @@ function StudentDashboard({ student, completed, onLogout, onOpenDia }) {
 
         {dias.length === 0 && <EmptyState msg="Seu professor ainda não enviou seu treino. Volte em breve!" />}
 
+        <SuporteCard pacote={student.pacote || "bronze"} whatsapp={config?.whatsappProfessor} />
+
         <div className="ta-plate-list">
           {dias.map((dia, idx) => {
             const total = dia.exercicios.length;
@@ -840,7 +974,39 @@ function StudentDashboard({ student, completed, onLogout, onOpenDia }) {
   );
 }
 
-function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, onToggleCompleted, onSetNote, onBack }) {
+function SuporteCard({ pacote, whatsapp }) {
+  const liberado = pacote === "prata" || pacote === "gold";
+  const numero = (whatsapp || "").replace(/\D/g, "");
+  if (!liberado) {
+    return (
+      <div className="ta-card ta-suporte-card locked">
+        <MessageCircle size={20} />
+        <div>
+          <div className="ta-suporte-title">Suporte direto com o professor</div>
+          <div className="ta-suporte-sub">Disponível nos planos Prata e Gold. Fale com seu professor para saber mais.</div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <a
+      className="ta-card ta-suporte-card"
+      href={numero ? `https://wa.me/${numero}?text=${encodeURIComponent("Oi! Tenho uma dúvida/dor/incômodo sobre meu treino.")}` : undefined}
+      target="_blank" rel="noopener noreferrer"
+      onClick={(e) => { if (!numero) e.preventDefault(); }}
+    >
+      <MessageCircle size={20} />
+      <div>
+        <div className="ta-suporte-title">Alguma dúvida, dor ou incômodo no treino?</div>
+        <div className="ta-suporte-sub">{numero ? "Fale direto com seu professor pelo WhatsApp" : "Suporte ainda não configurado pelo professor"}</div>
+      </div>
+    </a>
+  );
+}
+
+function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, onToggleCompleted, onSetNote, onRegistrarCarga, onSetFeedbackAluno, onBack }) {
+  const [cargaDraft, setCargaDraft] = useState({});
+  const fb = student.progresso?.feedback?.[diaIdx] || {};
   return (
     <div className="ta-page">
       <TopBar title={dia.nome} icon={<Dumbbell size={18} />} onBack={onBack} />
@@ -850,6 +1016,8 @@ function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, o
           {dia.exercicios.map((ex, ei) => {
             const key = `${student.id}-${diaIdx}-${ei}`;
             const done = !!completed[key];
+            const cargaKey = `${diaIdx}_${ei}`;
+            const cargas = student.progresso?.cargas?.[cargaKey] || [];
             return (
               <div className={`ta-ex-card ${done ? "done" : ""}`} key={ei}>
                 <div className="ta-ex-card-top">
@@ -868,6 +1036,27 @@ function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, o
                     <Play size={14} /> Ver vídeo explicativo
                   </a>
                 )}
+
+                <div className="ta-carga-block">
+                  <div className="ta-carga-label"><TrendingUp size={13} /> Evolução de carga</div>
+                  {cargas.length > 0 && (
+                    <div className="ta-carga-history">
+                      {cargas.slice(-5).map((c, i) => `${c.valor}kg (${formatDate(c.data)})`).join(" · ")}
+                    </div>
+                  )}
+                  <div className="ta-carga-add">
+                    <input
+                      className="ta-input" type="number" placeholder="Carga usada (kg)"
+                      value={cargaDraft[cargaKey] || ""}
+                      onChange={(e) => setCargaDraft({ ...cargaDraft, [cargaKey]: e.target.value })}
+                    />
+                    <button
+                      className="ta-btn ta-btn-ghost"
+                      onClick={() => { onRegistrarCarga(diaIdx, ei, cargaDraft[cargaKey]); setCargaDraft({ ...cargaDraft, [cargaKey]: "" }); }}
+                    >Registrar</button>
+                  </div>
+                </div>
+
                 <textarea
                   className="ta-textarea"
                   placeholder="Suas anotações sobre este exercício..."
@@ -877,6 +1066,19 @@ function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, o
               </div>
             );
           })}
+        </div>
+
+        <div className="ta-card ta-feedback-block">
+          <div className="ta-feedback-label">Como você se sentiu nesse treino?</div>
+          <textarea
+            className="ta-textarea" placeholder="Doeu algo? Achou fácil, difícil, algo que não gostou..."
+            value={fb.aluno || ""} onChange={(e) => onSetFeedbackAluno(diaIdx, e.target.value)}
+          />
+          {fb.professor && (
+            <div className="ta-feedback-professor">
+              <strong>Seu professor respondeu:</strong> {fb.professor}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1106,6 +1308,37 @@ function Style() {
       }
       .ta-toast.success { border-color: var(--teal); color: var(--teal); }
       .ta-toast.error { border-color: var(--danger); color: var(--danger); }
+
+      .ta-pacote-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+      .ta-pacote-option {
+        border: 1.5px solid var(--border); background: var(--surface-alt); color: var(--text-muted);
+        border-radius: 20px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: inherit;
+      }
+      .ta-pacote-option.selected { color: #221d14; border-color: transparent; }
+      .ta-pacote-option.bronze.selected { background: linear-gradient(135deg, #cd7f32, #a86428); }
+      .ta-pacote-option.prata.selected { background: linear-gradient(135deg, #d7d7de, #a7a7b3); }
+      .ta-pacote-option.gold.selected { background: linear-gradient(135deg, var(--accent), var(--accent-dark)); }
+      .ta-badge.pacote-bronze { background: #cd7f321f; color: #cd9a5f; border-color: transparent; }
+      .ta-badge.pacote-prata { background: #d7d7de1f; color: #c7c7d1; border-color: transparent; }
+      .ta-badge.pacote-gold { background: var(--accent-soft); color: var(--accent-dark); border-color: transparent; }
+
+      .ta-carga-block { margin-top: 10px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; }
+      .ta-carga-label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); margin-bottom: 6px; }
+      .ta-carga-history { font-size: 12px; color: var(--text); margin-bottom: 8px; }
+      .ta-carga-add { display: flex; gap: 8px; }
+      .ta-carga-add .ta-input { flex: 1; }
+
+      .ta-feedback-block { margin-top: 14px; }
+      .ta-feedback-label { font-weight: 600; font-size: 13.5px; margin-bottom: 8px; }
+      .ta-feedback-aluno { font-size: 13px; color: var(--text); background: var(--surface-alt); border-radius: 9px; padding: 10px 12px; margin-bottom: 10px; }
+      .ta-feedback-professor { margin-top: 10px; background: var(--accent-soft); border-radius: 9px; padding: 10px 12px; font-size: 12.5px; color: var(--text); }
+
+      .ta-suporte-card { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text); margin-bottom: 16px; transition: border-color .15s; }
+      .ta-suporte-card:not(.locked):hover { border-color: var(--teal); }
+      .ta-suporte-card svg { color: var(--teal); flex-shrink: 0; }
+      .ta-suporte-card.locked svg { color: var(--text-muted); }
+      .ta-suporte-title { font-weight: 600; font-size: 13.5px; }
+      .ta-suporte-sub { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
     `}</style>
   );
 }
