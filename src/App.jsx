@@ -64,6 +64,16 @@ function initials(nome) {
   return nome.split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 }
 const PACOTES = { bronze: "Bronze", prata: "Prata", gold: "Gold" };
+function acessoExpirado(acessoAte) {
+  return !!acessoAte && Date.now() > acessoAte;
+}
+function acessoStatusLabel(acessoAte) {
+  if (!acessoAte) return "sem prazo definido";
+  const dias = Math.ceil((acessoAte - Date.now()) / 86400000);
+  if (dias < 0) return `expirado há ${Math.abs(dias)} dia(s)`;
+  if (dias === 0) return "expira hoje";
+  return `expira em ${dias} dia(s)`;
+}
 
 
 export default function App() {
@@ -84,6 +94,7 @@ export default function App() {
   const [newEmail, setNewEmail] = useState("");
   const [newSenha, setNewSenha] = useState("");
   const [newPacote, setNewPacote] = useState("bronze");
+  const [newAcessoAte, setNewAcessoAte] = useState("");
   const [config, setConfig] = useState({ whatsappProfessor: "" });
   const [editingKey, setEditingKey] = useState(null);
   const [editDraft, setEditDraft] = useState(null);
@@ -318,10 +329,11 @@ export default function App() {
       const newUid = cred.user.uid;
       await setDoc(doc(db, "alunos", newUid), {
         nome: newName.trim(), email: newEmail.trim(), pacote: newPacote,
+        acessoAte: newAcessoAte ? new Date(newAcessoAte + "T23:59:59").getTime() : null,
         treino: { dias: [], ultimaAtualizacao: null },
       });
       await signOut(secondaryAuth);
-      setNewName(""); setNewEmail(""); setNewSenha(""); setNewPacote("bronze"); setShowAddStudent(false);
+      setNewName(""); setNewEmail(""); setNewSenha(""); setNewPacote("bronze"); setNewAcessoAte(""); setShowAddStudent(false);
       showToast("success", "Aluno cadastrado. Já pode entrar com o e-mail e senha dele.");
       await loadAllStudents();
     } catch (e) {
@@ -407,6 +419,17 @@ export default function App() {
       showToast("success", "Pacote atualizado.");
     } catch (e) {
       showToast("error", "Não foi possível atualizar o pacote.");
+    }
+  }
+
+  async function setAcessoAte(studentId, dateStr) {
+    const ts = dateStr ? new Date(dateStr + "T23:59:59").getTime() : null;
+    setStudents((prev) => prev.map((s) => s.id !== studentId ? s : { ...s, acessoAte: ts }));
+    try {
+      await updateDoc(doc(db, "alunos", studentId), { acessoAte: ts });
+      showToast("success", "Validade de acesso atualizada.");
+    } catch (e) {
+      showToast("error", "Não foi possível atualizar a validade.");
     }
   }
 
@@ -526,6 +549,7 @@ export default function App() {
           newEmail={newEmail} setNewEmail={setNewEmail}
           newSenha={newSenha} setNewSenha={setNewSenha}
           newPacote={newPacote} setNewPacote={setNewPacote}
+          newAcessoAte={newAcessoAte} setNewAcessoAte={setNewAcessoAte}
           onAddStudent={addStudent}
           config={config} onSaveWhatsapp={saveWhatsapp}
         />
@@ -554,11 +578,16 @@ export default function App() {
           onRemoveExercicio={(di, ei) => removeExercicio(viewStudent.id, di, ei)}
           onRemoveDia={(di) => removeDia(viewStudent.id, di)}
           onSetPacote={(pacote) => setPacote(viewStudent.id, pacote)}
+          onSetAcessoAte={(dateStr) => setAcessoAte(viewStudent.id, dateStr)}
           onSetFeedbackProfessor={(di, texto) => setFeedbackProfessor(viewStudent.id, di, texto)}
         />
       )}
 
-      {authRole === "aluno" && screen === "studentDashboard" && currentStudent && (
+      {authRole === "aluno" && currentStudent && acessoExpirado(currentStudent.acessoAte) && (
+        <AcessoExpirado student={currentStudent} config={config} onLogout={logout} />
+      )}
+
+      {authRole === "aluno" && screen === "studentDashboard" && currentStudent && !acessoExpirado(currentStudent.acessoAte) && (
         <StudentDashboard
           student={currentStudent}
           completed={completed}
@@ -568,7 +597,7 @@ export default function App() {
         />
       )}
 
-      {authRole === "aluno" && screen === "studentDay" && currentStudent && currentStudent.treino.dias[currentDiaIdx] && (
+      {authRole === "aluno" && screen === "studentDay" && currentStudent && !acessoExpirado(currentStudent.acessoAte) && currentStudent.treino.dias[currentDiaIdx] && (
         <StudentDayDetail
           student={currentStudent}
           diaIdx={currentDiaIdx}
@@ -686,7 +715,7 @@ function AdminDashboard(props) {
     students, studentsLoading, search, setSearch, onLogout, onOpenStudent, onRemoveStudent,
     onUploadClick, onDropFile, dragOver, setDragOver, onDownloadModel,
     showAddStudent, setShowAddStudent, newName, setNewName, newEmail, setNewEmail,
-    newSenha, setNewSenha, newPacote, setNewPacote, onAddStudent,
+    newSenha, setNewSenha, newPacote, setNewPacote, newAcessoAte, setNewAcessoAte, onAddStudent,
     config, onSaveWhatsapp,
   } = props;
   const [showSuporteConfig, setShowSuporteConfig] = useState(false);
@@ -750,6 +779,12 @@ function AdminDashboard(props) {
               ))}
             </div>
             <p className="ta-hint">Esse e-mail e senha serão o login do aluno no app. Suporte direto por WhatsApp é liberado nos planos Prata e Gold.</p>
+            <label className="ta-label">Acesso válido até (opcional — deixe em branco para sem prazo)</label>
+            <input className="ta-input" type="date" value={newAcessoAte} onChange={(e) => setNewAcessoAte(e.target.value)} />
+            <button
+              type="button" className="ta-btn ta-btn-ghost"
+              onClick={() => { const d = new Date(); d.setDate(d.getDate() + 7); setNewAcessoAte(d.toISOString().slice(0, 10)); }}
+            >Usar teste grátis de 7 dias</button>
             <div className="ta-row-end">
               <button className="ta-btn ta-btn-ghost" onClick={() => setShowAddStudent(false)}>Cancelar</button>
               <button className="ta-btn ta-btn-primary" onClick={onAddStudent}>Salvar aluno</button>
@@ -764,9 +799,12 @@ function AdminDashboard(props) {
             <div key={s.id} className="ta-student-row">
               <div className="ta-avatar">{initials(s.nome)}</div>
               <div className="ta-student-info">
-                <div className="ta-student-name">{s.nome} <span className={`ta-badge pacote-${s.pacote || "bronze"}`}>{PACOTES[s.pacote] || "Bronze"}</span></div>
+                <div className="ta-student-name">
+                  {s.nome} <span className={`ta-badge pacote-${s.pacote || "bronze"}`}>{PACOTES[s.pacote] || "Bronze"}</span>
+                  {acessoExpirado(s.acessoAte) && <span className="ta-badge expirado">expirado</span>}
+                </div>
                 <div className="ta-student-meta">
-                  {s.treino.dias.length} dia(s) de treino · atualizado em {formatDate(s.treino.ultimaAtualizacao)}
+                  {s.treino.dias.length} dia(s) de treino · atualizado em {formatDate(s.treino.ultimaAtualizacao)} · acesso {acessoStatusLabel(s.acessoAte)}
                 </div>
               </div>
               <button className="ta-btn ta-btn-ghost" onClick={() => onOpenStudent(s.id)}>Ver treino</button>
@@ -826,14 +864,15 @@ function AdminUploadPreview({ preview, onCancel, onConfirm }) {
 }
 
 function AdminStudentView(props) {
-  const { student, onBack, editingKey, editDraft, setEditDraft, onStartEdit, onSaveEdit, onCancelEdit, onRemoveExercicio, onRemoveDia, onSetPacote, onSetFeedbackProfessor } = props;
+  const { student, onBack, editingKey, editDraft, setEditDraft, onStartEdit, onSaveEdit, onCancelEdit, onRemoveExercicio, onRemoveDia, onSetPacote, onSetFeedbackProfessor, onSetAcessoAte } = props;
+  const acessoDateValue = student.acessoAte ? new Date(student.acessoAte).toISOString().slice(0, 10) : "";
   return (
     <div className="ta-page">
       <TopBar title={student.nome} icon={<Users size={18} />} onBack={onBack} />
       <div className="ta-wrap">
         <div className="ta-row-between" style={{ marginBottom: 14 }}>
           <div className="ta-student-meta">
-            Última atualização: {formatDate(student.treino.ultimaAtualizacao)} · {student.treino.dias.length} dia(s)
+            Última atualização: {formatDate(student.treino.ultimaAtualizacao)} · {student.treino.dias.length} dia(s) · acesso {acessoStatusLabel(student.acessoAte)}
           </div>
           <div className="ta-pacote-picker">
             {Object.entries(PACOTES).map(([key, label]) => (
@@ -844,6 +883,14 @@ function AdminStudentView(props) {
               >{label}</button>
             ))}
           </div>
+        </div>
+        <div className="ta-row-between" style={{ marginTop: -6 }}>
+          <label className="ta-label" style={{ margin: 0 }}>Acesso válido até</label>
+          <input
+            className="ta-input" type="date" style={{ maxWidth: 170 }}
+            value={acessoDateValue}
+            onChange={(e) => onSetAcessoAte(e.target.value)}
+          />
         </div>
         {student.treino.dias.length === 0 && <EmptyState msg="Este aluno ainda não tem treino cadastrado. Envie uma planilha com o nome dele." />}
         {student.treino.dias.map((dia, di) => {
@@ -1087,6 +1134,28 @@ function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, o
 
 /* ============================== PARTES REUTILIZÁVEIS ============================== */
 
+function AcessoExpirado({ student, config, onLogout }) {
+  const numero = (config?.whatsappProfessor || "").replace(/\D/g, "");
+  const podeSuporte = student.pacote === "prata" || student.pacote === "gold";
+  return (
+    <div className="ta-center">
+      <div className="ta-auth-card" style={{ textAlign: "center" }}>
+        <div className="ta-auth-icon" style={{ margin: "0 auto 12px" }}><Clock size={22} /></div>
+        <h2 className="ta-h2">Seu acesso expirou</h2>
+        <p className="ta-sub small">Fale com seu professor para renovar e continuar acompanhando seu treino.</p>
+        {podeSuporte && numero && (
+          <a
+            className="ta-btn ta-btn-primary ta-btn-block"
+            href={`https://wa.me/${numero}?text=${encodeURIComponent("Oi! Meu acesso ao Training Club expirou, gostaria de renovar.")}`}
+            target="_blank" rel="noopener noreferrer"
+          >Falar com o professor</a>
+        )}
+        <button className="ta-btn ta-btn-ghost ta-btn-block" onClick={onLogout} style={{ marginTop: 10 }}>Sair</button>
+      </div>
+    </div>
+  );
+}
+
 function TopBar({ title, icon, onBack, onLogout }) {
   return (
     <div className="ta-topbar">
@@ -1321,6 +1390,7 @@ function Style() {
       .ta-badge.pacote-bronze { background: #cd7f321f; color: #cd9a5f; border-color: transparent; }
       .ta-badge.pacote-prata { background: #d7d7de1f; color: #c7c7d1; border-color: transparent; }
       .ta-badge.pacote-gold { background: var(--accent-soft); color: var(--accent-dark); border-color: transparent; }
+      .ta-badge.expirado { background: var(--danger-soft); color: var(--danger); border-color: transparent; margin-left: 6px; }
 
       .ta-carga-block { margin-top: 10px; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; }
       .ta-carga-label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); margin-bottom: 6px; }
