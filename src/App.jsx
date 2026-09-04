@@ -63,6 +63,9 @@ function formatDate(ts) {
 function initials(nome) {
   return nome.split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 }
+function repsLabel(repeticoes) {
+  return repeticoes && Number(repeticoes) > 0 ? `${repeticoes} repetições` : "até a falha";
+}
 const PACOTES = { bronze: "Bronze", prata: "Prata", gold: "Gold" };
 function acessoExpirado(acessoAte) {
   return !!acessoAte && Date.now() > acessoAte;
@@ -260,9 +263,9 @@ export default function App() {
       });
       const preview = Object.entries(byStudent).map(([nome, diasObj]) => {
         const dias = Object.values(diasObj).sort((a, b) => a.dia - b.dia);
-        const existing = students.find((s) => s.nome.toLowerCase() === nome.toLowerCase());
+        const matches = students.filter((s) => s.nome.toLowerCase() === nome.toLowerCase());
         return {
-          nome, isNew: !existing,
+          nome, isNew: matches.length === 0, ambiguous: matches.length > 1,
           totalExercicios: dias.reduce((a, d) => a + d.exercicios.length, 0),
           dias,
         };
@@ -283,7 +286,11 @@ export default function App() {
     if (naoVinculados.length) {
       showToast("error", `${naoVinculados.length} aluno(s) da planilha ainda não têm conta cadastrada. Cadastre-os primeiro em "Novo aluno" (com e-mail e senha) e suba a planilha de novo.`);
     }
-    const vinculados = uploadPreview.entries.filter((e) => !e.isNew);
+    const ambiguos = uploadPreview.entries.filter((e) => e.ambiguous);
+    if (ambiguos.length) {
+      showToast("error", `${ambiguos.length} nome(s) batem com mais de um aluno cadastrado — pulei esses pra não atualizar o treino errado. Renomeie um deles (ex: "Nome (Manhã)") e tente de novo.`);
+    }
+    const vinculados = uploadPreview.entries.filter((e) => !e.isNew && !e.ambiguous);
     try {
       for (const entry of vinculados) {
         const alvo = students.find((s) => s.nome.toLowerCase() === entry.nome.toLowerCase());
@@ -322,6 +329,10 @@ export default function App() {
     }
     if (newSenha.trim().length < 6) {
       showToast("error", "A senha precisa ter pelo menos 6 caracteres.");
+      return;
+    }
+    if (students.some((s) => s.nome.trim().toLowerCase() === newName.trim().toLowerCase())) {
+      showToast("error", `Já existe um aluno chamado "${newName.trim()}". Como o upload de planilha identifica o aluno pelo nome, use um nome diferente (ex: "${newName.trim()} 2") pra evitar confusão.`);
       return;
     }
     try {
@@ -842,7 +853,9 @@ function AdminUploadPreview({ preview, onCancel, onConfirm }) {
             <div className="ta-card ta-preview-card" key={i}>
               <div className="ta-row-between">
                 <div className="ta-student-name">{entry.nome}</div>
-                <span className={`ta-badge ${entry.isNew ? "new" : "update"}`}>{entry.isNew ? "sem conta — não será salvo" : "atualização"}</span>
+                <span className={`ta-badge ${entry.ambiguous ? "new" : entry.isNew ? "new" : "update"}`}>
+                  {entry.ambiguous ? "nome duplicado — não será salvo" : entry.isNew ? "sem conta — não será salvo" : "atualização"}
+                </span>
               </div>
               <div className="ta-student-meta">{entry.dias.length} dia(s) · {entry.totalExercicios} exercício(s)</div>
               <div className="ta-preview-dias">
@@ -912,7 +925,7 @@ function AdminStudentView(props) {
                       <input className="ta-input" value={editDraft.nome} onChange={(e) => setEditDraft({ ...editDraft, nome: e.target.value })} placeholder="Exercício" />
                       <div className="ta-ex-edit-grid">
                         <input className="ta-input" type="number" value={editDraft.series} onChange={(e) => setEditDraft({ ...editDraft, series: e.target.value })} placeholder="Séries" />
-                        <input className="ta-input" type="number" value={editDraft.repeticoes} onChange={(e) => setEditDraft({ ...editDraft, repeticoes: e.target.value })} placeholder="Repetições" />
+                        <input className="ta-input" type="number" value={editDraft.repeticoes} onChange={(e) => setEditDraft({ ...editDraft, repeticoes: e.target.value })} placeholder="Repetições (deixe 0 p/ até a falha)" />
                       </div>
                       <input className="ta-input" value={editDraft.linkVideo} onChange={(e) => setEditDraft({ ...editDraft, linkVideo: e.target.value })} placeholder="Link do vídeo" />
                       <input className="ta-input" value={editDraft.observacoes} onChange={(e) => setEditDraft({ ...editDraft, observacoes: e.target.value })} placeholder="Observações" />
@@ -927,7 +940,7 @@ function AdminStudentView(props) {
                         <div className="ta-ex-name">{ex.nome}</div>
                         <div className="ta-ex-tags">
                           <span className="ta-badge">{ex.series} séries</span>
-                          <span className="ta-badge">{ex.repeticoes} reps</span>
+                          <span className="ta-badge">{repsLabel(ex.repeticoes)}</span>
                           {ex.observacoes && <span className="ta-badge muted">{ex.observacoes}</span>}
                         </div>
                         {cargas.length > 0 && (
@@ -1075,14 +1088,16 @@ function StudentDayDetail({ student, diaIdx, dia, totalDias, completed, notes, o
                 </div>
                 <div className="ta-ex-tags">
                   <span className="ta-badge">{ex.series} séries</span>
-                  <span className="ta-badge">{ex.repeticoes} repetições</span>
+                  <span className="ta-badge">{repsLabel(ex.repeticoes)}</span>
                 </div>
                 {ex.observacoes && <div className="ta-ex-obs">{ex.observacoes}</div>}
-                {ex.linkVideo && (
-                  <a className="ta-btn ta-btn-video" href={ex.linkVideo} target="_blank" rel="noopener noreferrer">
-                    <Play size={14} /> Ver vídeo explicativo
-                  </a>
-                )}
+                <a
+                  className="ta-btn ta-btn-video"
+                  href={ex.linkVideo && ex.linkVideo.trim() ? ex.linkVideo : `https://www.youtube.com/results?search_query=${encodeURIComponent(ex.nome + " execução técnica exercício")}`}
+                  target="_blank" rel="noopener noreferrer"
+                >
+                  <Play size={14} /> Ver vídeo explicativo
+                </a>
 
                 <div className="ta-carga-block">
                   <div className="ta-carga-label"><TrendingUp size={13} /> Evolução de carga</div>
